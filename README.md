@@ -50,7 +50,7 @@ The program will:
 1. Generate a truth table
 2. Show step-by-step evaluation
 3. Provide a detailed explanation
-4. Save the results to `result.txt`
+4. Save the results to `result.md`
 
 Type 'q' to quit the program.
 

@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 import itertools
 from typing import List, Dict, Callable
 from tabulate import tabulate
+import sys
+import threading
+import time
 
 load_dotenv()
 
@@ -141,52 +144,48 @@ def evaluate_step(expression: str, values: Dict[str, bool]) -> tuple[bool, List[
 
 
 def generate_truth_table(expression: str) -> str:
-    """Generate a truth table for the given expression with intermediate steps"""
     variables = get_variables(expression)
     combinations = list(itertools.product(
         [True, False], repeat=len(variables)))
 
     first_values = dict(zip(variables, combinations[0]))
-    final_result, steps = evaluate_step(expression, first_values)
+    _, steps = evaluate_step(expression, first_values)
 
-    headers = variables + ["1", "2", "3"]
-    rows = []
+    step_headers = []
+    for i, (expr, _) in enumerate(steps, 1):
+        latex_expr = expr
+        for eng, latex in {
+            'AND': r'\land',
+            'OR': r'\lor',
+            'IMPLIES': r'\rightarrow',
+            'NOT': r'\neg',
+            'EQUIV': r'\leftrightarrow',
+            'XOR': r'\oplus'
+        }.items():
+            latex_expr = latex_expr.replace(eng, latex)
+        step_headers.append(f"Шаг {i} (${latex_expr}$)")
+
+    headers = variables + step_headers
+
+    # Create markdown table header
+    markdown_table = "| " + " | ".join(headers) + " |\n"
+    markdown_table += "|" + "|".join([":-:"] * len(headers)) + "|\n"
 
     for combo in combinations:
         values = dict(zip(variables, combo))
         try:
-            final_result, step_results = evaluate_step(expression, values)
-            row = [int(values[var]) for var in variables]
-            for i in range(3):
+            _, step_results = evaluate_step(expression, values)
+            row = ['1' if values[var] else '0' for var in variables]
+            for i in range(len(step_headers)):
                 if i < len(step_results):
-                    row.append(int(step_results[i][1]))
+                    row.append('1' if step_results[i][1] else '0')
                 else:
-                    row.append("-")
-            rows.append(row)
+                    row.append('0')
+            markdown_table += "| " + " | ".join(row) + " |\n"
         except Exception as e:
             return f"Error evaluating expression: {str(e)}"
 
-    table = tabulate(rows, headers=headers,
-                     tablefmt="simple", numalign="center")
-
-    step_explanations = "\nSteps:"
-
-    rus_operators = {
-        'AND': 'конъюнкция',
-        'OR': 'дизъюнкция',
-        'IMPLIES': 'импликация',
-        'NOT': 'отрицание',
-        'EQUIV': 'эквивалентность',
-        'XOR': 'исключающее или'
-    }
-
-    for i, (expr, _) in enumerate(steps, 1):
-        rus_expr = expr
-        for eng, rus in rus_operators.items():
-            rus_expr = rus_expr.replace(eng, rus)
-        step_explanations += f"\n{i}. {rus_expr}"
-
-    return table + step_explanations
+    return markdown_table
 
 
 def generate_solution_description(expression: str, table: str, steps: str) -> str:
@@ -209,7 +208,7 @@ Please provide:
 3. An explanation of each step in the evaluation process
 4. The final conclusion about when the expression is true/false
 
-Keep the explanation clear and concise. Remove markdown and use only Russian language for explanation."""
+Keep the explanation clear and concise. Don't use markdown characters and use only Russian language for explanation."""
 
     try:
         response = model.generate_content(prompt)
@@ -218,12 +217,71 @@ Keep the explanation clear and concise. Remove markdown and use only Russian lan
         return f"Could not generate explanation: {str(e)}"
 
 
+class Loader:
+    def __init__(self, desc="Loading..."):
+        self.desc = desc
+        self.done = False
+        self.spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+        self.spinner_thread = threading.Thread(target=self._spin)
+
+    def _spin(self):
+        while not self.done:
+            for char in self.spinner:
+                sys.stdout.write(f'\r{char} {self.desc}')
+                sys.stdout.flush()
+                time.sleep(0.1)
+                if self.done:
+                    break
+
+    def __enter__(self):
+        self.spinner_thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.done = True
+        self.spinner_thread.join()
+        sys.stdout.write('\r\033[K')
+        sys.stdout.flush()
+
+
+def to_latex(expression: str) -> str:
+    """Convert logical expression to LaTeX format."""
+    replacements = {
+        'конъюнкция': r'\land',
+        'дизъюнкция': r'\lor',
+        'импликация': r'\rightarrow',
+        'отрицание': r'\neg',
+        'эквивалентность': r'\leftrightarrow',
+        'исключающее или': r'\oplus'
+    }
+    latex_expr = expression
+    for rus, latex in replacements.items():
+        latex_expr = latex_expr.replace(rus, latex)
+    return latex_expr
+
+
 def solve_discrete_math(expression: str) -> str:
     """Solve discrete mathematics expression and return truth table with steps and explanation"""
     try:
-        table = generate_truth_table(expression)
-        explanation = generate_solution_description(expression, table, "")
-        return f"Expression: {expression}\n\n{table}\n\nExplanation:\n{explanation}"
+        with Loader("Generating solution..."):
+            table = generate_truth_table(expression)
+            explanation = generate_solution_description(expression, table, "")
+            latex_expression = to_latex(expression)
+            markdown_result = f"""# Решение дискретной математики
+
+## Выражение
+$${latex_expression}$$
+
+## Таблица истинности и шаги решения
+{table}
+
+## Объяснение
+{explanation}
+"""
+            # Save to markdown file
+            with open('result.md', 'w', encoding='utf-8') as f:
+                f.write(markdown_result)
+            return markdown_result
     except Exception as e:
         return f"Error solving expression: {str(e)}"
 
@@ -246,9 +304,8 @@ def main():
 
         result = solve_discrete_math(expression)
         print("\nResult:")
-        with open('result.txt', 'w', encoding='utf-8') as f:
-            f.write(result)
         print(result)
+        print(f"\nResult has been saved to 'result.md'")
 
 
 if __name__ == "__main__":
